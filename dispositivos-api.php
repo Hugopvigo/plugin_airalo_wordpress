@@ -14,9 +14,9 @@ if (!defined('ABSPATH')) {
 require_once __DIR__ . '/vendor/autoload.php';
 
 // Cargar variables de entorno
+$dotenv = Dotenv\Dotenv::createUnsafeImmutable(__DIR__);
 if (file_exists(__DIR__ . '/.env')) {
-    $dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
-    $dotenv->load();
+    $dotenv->safeLoad();
 }
 
 // Función para obtener el token de acceso
@@ -36,7 +36,6 @@ function obtener_token_acceso() {
         error_log('Error: AIRALO_CLIENT_ID o AIRALO_CLIENT_SECRET no están definidos en las variables de entorno.');
         return false;
     }
-
     $url = 'https://partners-api.airalo.com/v2/token';
 
     $args = array(
