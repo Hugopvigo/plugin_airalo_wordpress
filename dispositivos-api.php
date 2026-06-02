@@ -13,9 +13,11 @@ if (!defined('ABSPATH')) {
 // Cargar Composer autoload
 require_once __DIR__ . '/vendor/autoload.php';
 
-// Cargar variables de entorno
-$dotenv = Dotenv\Dotenv::createImmutable(__DIR__);
-$dotenv->load();
+// Cargar variables de entorno (safe: no petar si falta .env)
+$dotenv = Dotenv\Dotenv::createUnsafeImmutable(__DIR__);
+if (file_exists(__DIR__ . '/.env')) {
+    $dotenv->safeLoad();
+}
 
 // Función para obtener el token de acceso
 function obtener_token_acceso() {
