@@ -63,16 +63,29 @@ final class PlaceOrder {
                     <tr>
                         <th scope="row"><label for="package_id"><?php esc_html_e( 'Paquete', MPA_TEXTDOMAIN ); ?></label></th>
                         <td>
-                            <select name="package_id" id="package_id" required>
+                            <input type="text" id="mpa-package-search" class="regular-text" placeholder="<?php esc_attr_e( 'Buscar paquete...', MPA_TEXTDOMAIN ); ?>" style="margin-bottom:6px;" />
+                            <select name="package_id" id="package_id" required style="width:100%;max-width:500px;">
                                 <option value=""><?php esc_html_e( '— Selecciona —', MPA_TEXTDOMAIN ); ?></option>
-                                <?php foreach ( (array) $packages as $p ) :
-                                    $pid   = (string) ( $p['package_id'] ?? '' );
-                                    $title = (string) ( $p['title'] ?? $pid );
-                                    $price = isset( $p['net_price'] ) ? (float) $p['net_price'] : (float) ( $p['price'] ?? 0 );
+                                <?php
+                                $grouped = [];
+                                foreach ( (array) $packages as $p ) {
+                                    $code = strtoupper( (string) ( ( $p['countries'] ?? [] )[0] ?? '' ) );
+                                    $grouped[ $code ][] = $p;
+                                }
+                                foreach ( $grouped as $code => $pkgs ) :
+                                    $label = '' !== $code ? $code : __( 'Global', MPA_TEXTDOMAIN );
                                     ?>
-                                    <option value="<?php echo esc_attr( $pid ); ?>">
-                                        <?php echo esc_html( sprintf( '%s — %s ($%s)', $pid, $title, number_format_i18n( $price, 2 ) ) ); ?>
-                                    </option>
+                                    <optgroup label="<?php echo esc_attr( $label ); ?>">
+                                    <?php foreach ( $pkgs as $p ) :
+                                        $pid   = (string) ( $p['package_id'] ?? '' );
+                                        $title = (string) ( $p['title'] ?? $pid );
+                                        $price = isset( $p['net_price'] ) ? (float) $p['net_price'] : (float) ( $p['price'] ?? 0 );
+                                        ?>
+                                        <option value="<?php echo esc_attr( $pid ); ?>">
+                                            <?php echo esc_html( sprintf( '%s — $%s', $title, number_format_i18n( $price, 2 ) ) ); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                    </optgroup>
                                 <?php endforeach; ?>
                             </select>
                         </td>
@@ -163,6 +176,17 @@ final class PlaceOrder {
         try {
             $data = $this->api->get_sim_packages( true );
             $list = is_array( $data['data'] ?? null ) ? $data['data'] : ( is_array( $data ) ? $data : [] );
+            usort( $list, static function ( $a, $b ) {
+                $ca = strtoupper( (string) ( ( $a['countries'] ?? [] )[0] ?? 'ZZ' ) );
+                $cb = strtoupper( (string) ( ( $b['countries'] ?? [] )[0] ?? 'ZZ' ) );
+                $cmp = strcmp( $ca, $cb );
+                if ( 0 !== $cmp ) {
+                    return $cmp;
+                }
+                $aa = (int) ( $a['amount'] ?? 0 );
+                $ab = (int) ( $b['amount'] ?? 0 );
+                return $aa <=> $ab;
+            } );
             set_transient( self::CACHE_KEY_PACKAGES, $list, HOUR_IN_SECONDS );
             return $list;
         } catch ( \Throwable $e ) {

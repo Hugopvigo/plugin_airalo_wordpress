@@ -177,6 +177,9 @@
 
 .mpa-action-stack > * { width: 100%; }
 
+/* Package search input (Place Order) */
+#mpa-package-search { width: 100%; max-width: 500px; }
+
 .mpa-detail__grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 320px;

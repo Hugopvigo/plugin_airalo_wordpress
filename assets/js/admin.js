@@ -181,6 +181,28 @@
         root.querySelectorAll('.mpa-tabs__panel').forEach(function (p) { p.classList.toggle('is-active', p.dataset.panel === name); });
     });
 
+    // Package search filter for Place Order select
+    $(document).on('input', '#mpa-package-search', function () {
+        var q = this.value.toLowerCase().replace(/\s+/g, '');
+        var sel = document.getElementById('package_id');
+        if (!sel) return;
+        var optgroups = sel.querySelectorAll('optgroup');
+        optgroups.forEach(function (group) {
+            var hasVisible = false;
+            group.querySelectorAll('option').forEach(function (opt) {
+                if (!opt.value) return;
+                var text = (opt.textContent || '').toLowerCase();
+                var pid  = (opt.value || '').toLowerCase();
+                var show = !q || text.indexOf(q) !== -1 || pid.indexOf(q) !== -1;
+                opt.hidden = !show;
+                opt.style.display = show ? '' : 'none';
+                if (show) hasVisible = true;
+            });
+            group.hidden = !hasVisible;
+            group.style.display = hasVisible ? '' : 'none';
+        });
+    });
+
     // Copy buttons
     $(document).on('click', '[data-copy]', function () {
         const target = document.querySelector(this.dataset.copy);
