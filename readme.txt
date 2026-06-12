@@ -4,7 +4,7 @@ Tags: airalo, esim, woocommerce, backoffice, refills
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.4.2
+Stable tag: 2.4.3
 License: Proprietary
 License URI: https://www.suop.es/
 
@@ -37,6 +37,10 @@ Plugin interno para gestionar la integración con Airalo Partner API desde WordP
 4. Ve a Airalo > Ajustes y verifica el estado de la API
 
 == Changelog ==
+
+= 2.4.3 =
+* fix: eliminada dependencia `airalo/sdk` — todas las llamadas a la API son ahora REST directas vía `wp_remote_*`, sin clases `Airalo\*` que conflictuaban con el plugin oficial de Airalo
+* fix: `get_sim_packages()`, `place_order()`, `topup()`, `get_sim_usage()`, `get_sim_instructions()`, `get_sim_topup_packages()`, `get_sim_package_history()`, `get_package_country_map()` reescritos como llamadas REST nativas
 
 = 2.3.0 =
 * eSIMs: índice basado en `GET /v2/sims` (en vez de `/v2/orders`) — ahora se ven **todas** las eSIMs, incluidas las **expiradas/recicladas**

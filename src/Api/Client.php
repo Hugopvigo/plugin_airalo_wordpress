@@ -2,20 +2,15 @@
 /**
  * Airalo API client.
  *
- * Thin wrapper over the official airalo/sdk that:
- *  - lazy-initialises the SDK with the configured credentials;
- *  - exposes typed helpers for the endpoints we use in the backoffice;
- *  - normalises exceptions;
- *  - caches read-only responses (devices, balance) in transients.
+ * Direct REST wrapper for the Airalo Partner API v2.
+ * Does NOT depend on airalo/sdk to avoid namespace conflicts with the
+ * official Airalo WordPress plugin when both are active on the same site.
  *
  * @package Hugo\MiPluginAiralo
  */
 
 namespace Hugo\MiPluginAiralo\Api;
 
-use Airalo\Airalo;
-use Airalo\AiraloStatic;
-use Airalo\Exceptions\AiraloException;
 use Hugo\MiPluginAiralo\Env\Config;
 use Hugo\MiPluginAiralo\Support\Logger;
 
@@ -31,9 +26,7 @@ final class Client {
     private const CACHE_KEY_SIM_BY_ICCID = 'mpa_airalo_sim_';
     private const CACHE_KEY_ORDERS_FRESH = 'mpa_orders_';
     private const CACHE_KEY_ORDERS_STALE = 'mpa_orders_stale_';
-
-    private ?Airalo $sdk = null;
-    private bool $sdk_initialised = false;
+    private const CACHE_KEY_PACKAGES     = 'mpa_airalo_packages';
 
     public function __construct(
         private readonly Config $config,
@@ -45,6 +38,10 @@ final class Client {
         return $this->config->is_configured();
     }
 
+    // -------------------------------------------------------------------------
+    // Balance
+    // -------------------------------------------------------------------------
+
     public function get_balance(): array {
         $cached = get_transient( self::CACHE_KEY_BALANCE );
         if ( is_array( $cached ) ) {
@@ -55,6 +52,10 @@ final class Client {
         return $data;
     }
 
+    // -------------------------------------------------------------------------
+    // Compatible devices
+    // -------------------------------------------------------------------------
+
     public function get_compatible_devices( bool $force_refresh = false ): array {
         if ( ! $force_refresh ) {
             $cached = get_transient( self::CACHE_KEY_DEVICES );
@@ -62,29 +63,59 @@ final class Client {
                 return $cached;
             }
         }
-        $data = $this->call( fn() => $this->fetch_devices_via_rest() );
-        set_transient( self::CACHE_KEY_DEVICES, $data, $this->config->cache_ttl_devices() );
-        return $data;
+        $data = $this->request( 'GET', '/compatible-devices' );
+        $list = $data['data'] ?? [];
+        set_transient( self::CACHE_KEY_DEVICES, $list, $this->config->cache_ttl_devices() );
+        return $list;
     }
+
+    // -------------------------------------------------------------------------
+    // Packages
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns all available packages, paginating through the API.
+     * Result format: ['data' => [...packages...]]
+     */
+    public function get_sim_packages( bool $force_refresh = false ): array {
+        if ( ! $force_refresh ) {
+            $cached = get_transient( self::CACHE_KEY_PACKAGES );
+            if ( is_array( $cached ) ) {
+                return $cached;
+            }
+        }
+        $all   = [];
+        $page  = 1;
+        $limit = 100;
+        do {
+            $resp = $this->request( 'GET', '/packages', [ 'page' => $page, 'limit' => $limit ] );
+            $rows = $resp['data'] ?? [];
+            if ( ! is_array( $rows ) || empty( $rows ) ) {
+                break;
+            }
+            $all      = array_merge( $all, $rows );
+            $last     = (int) ( $resp['meta']['last_page'] ?? $page );
+            $page++;
+        } while ( $page <= $last );
+
+        $result = [ 'data' => $all ];
+        set_transient( self::CACHE_KEY_PACKAGES, $result, DAY_IN_SECONDS );
+        return $result;
+    }
+
+    // -------------------------------------------------------------------------
+    // Orders
+    // -------------------------------------------------------------------------
 
     public function get_orders( array $params = [], bool $bypass_cache = false ): array {
         if ( $bypass_cache ) {
-            return $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+            return $this->fetch_orders_via_rest( $params );
         }
         return $this->get_orders_cached( $params );
     }
 
     /**
      * Stale-while-revalidate cache for get_orders().
-     *
-     * Two-layer strategy:
-     *  1. Fresh cache (5 min) — returned immediately when available.
-     *  2. Stale cache (24 h) — returned when fresh expires, while a
-     *     background revalidation is scheduled via wp_schedule_single_event.
-     *  3. Cold start — fetches from the API and populates both layers.
-     *
-     * @param array<string,mixed> $params  Query params for GET /v2/orders.
-     * @return array<int, array<string,mixed>>
      */
     private function get_orders_cached( array $params ): array {
         $params_key = md5( wp_json_encode( $params ) );
@@ -102,19 +133,12 @@ final class Client {
             return $stale;
         }
 
-        $data = $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+        $data = $this->fetch_orders_via_rest( $params );
         set_transient( $fresh_key, $data, $this->config->cache_ttl_orders() );
         set_transient( $stale_key, $data, $this->config->cache_ttl_orders_stale() );
         return $data;
     }
 
-    /**
-     * Schedules a one-shot background revalidation for the orders cache.
-     *
-     * Uses wp_schedule_single_event with a 30-second delay so the current
-     * request returns immediately with stale data while the next request
-     * (or WP-Cron run) refreshes the cache layers.
-     */
     private function schedule_orders_revalidation( array $params ): void {
         $hook = 'mpa_revalidate_orders';
         if ( wp_next_scheduled( $hook, [ $params ] ) ) {
@@ -123,19 +147,12 @@ final class Client {
         wp_schedule_single_event( time() + 30, $hook, [ $params ] );
     }
 
-    /**
-     * Refreshes both fresh and stale cache layers for get_orders().
-     *
-     * Called by the mpa_revalidate_orders cron hook. Silently catches
-     * errors so the background job never crashes.
-     */
     public function revalidate_orders_cache( array $params ): void {
         $params_key = md5( wp_json_encode( $params ) );
         $fresh_key  = self::CACHE_KEY_ORDERS_FRESH . $params_key;
         $stale_key  = self::CACHE_KEY_ORDERS_STALE . $params_key;
-
         try {
-            $data = $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+            $data = $this->fetch_orders_via_rest( $params );
             set_transient( $fresh_key, $data, $this->config->cache_ttl_orders() );
             set_transient( $stale_key, $data, $this->config->cache_ttl_orders_stale() );
         } catch ( \Throwable $e ) {
@@ -144,13 +161,7 @@ final class Client {
     }
 
     /**
-     * Fetches ALL orders by paginating through the Airalo /v2/orders endpoint.
-     *
-     * The SDK / REST endpoint caps `limit` to 50/page, so for the eSIMs index
-     * (which has to include every ICCID ever sold to make search work) we loop
-     * until an empty page is returned or a hard cap is hit.
-     *
-     * @return array<int, array<string,mixed>>
+     * Fetches ALL orders by paginating, with dedup. Cached for cache_ttl_orders().
      */
     public function get_orders_paginated( int $max_pages = 40, int $per_page = 50 ): array {
         $cache_key = 'mpa_orders_paginated_' . md5( "{$max_pages}_{$per_page}" );
@@ -159,7 +170,7 @@ final class Client {
             return $cached;
         }
 
-        $collected = [];
+        $collected  = [];
         $seen_codes = [];
 
         for ( $page = 1; $page <= $max_pages; $page++ ) {
@@ -194,71 +205,54 @@ final class Client {
         return $collected;
     }
 
-    /**
-     * Builds an ICCID-to-order-data map from the /v2/orders endpoint.
-     *
-     * Used to enrich the eSIMs list (which no longer returns order-level
-     * fields via `include`) with package, description, and order code.
-     *
-     * @return array<string,array{package_id:string,package:string,description:string,code:string,created_at:string}>
-     */
-    public function build_iccid_order_map(): array {
-        $cache_key = 'mpa_iccid_order_map';
-        $cached    = get_transient( $cache_key );
-        if ( is_array( $cached ) ) {
-            return $cached;
+    public function place_order( string $package_id, int $quantity, ?string $description = null ): array {
+        $body = [ 'package_id' => $package_id, 'quantity' => $quantity ];
+        if ( null !== $description && '' !== $description ) {
+            $body['description'] = $description;
         }
-
-        $orders = $this->get_orders_paginated();
-        $map    = [];
-
-        foreach ( $orders as $o ) {
-            $order_data = [
-                'package_id'  => (string) ( $o['package_id'] ?? '' ),
-                'package'     => (string) ( $o['package'] ?? '' ),
-                'description' => (string) ( $o['description'] ?? '' ),
-                'code'        => (string) ( $o['code'] ?? '' ),
-                'created_at'  => (string) ( $o['created_at'] ?? '' ),
-            ];
-            $iccids = [];
-            foreach ( (array) ( $o['sims'] ?? [] ) as $s ) {
-                $iccid = (string) ( $s['iccid'] ?? '' );
-                if ( '' !== $iccid ) {
-                    $iccids[] = $iccid;
-                }
-            }
-            if ( empty( $iccids ) ) {
-                continue;
-            }
-            foreach ( $iccids as $iccid ) {
-                $map[ $iccid ] = $order_data;
-            }
-        }
-
-        set_transient( $cache_key, $map, 5 * MINUTE_IN_SECONDS );
-        return $map;
+        return $this->request( 'POST', '/orders', $body );
     }
 
+    // -------------------------------------------------------------------------
+    // SIMs
+    // -------------------------------------------------------------------------
+
     public function get_sim_usage( string $iccid ): array {
-        return $this->call( fn() => $this->sdk()->simUsage( $iccid ) );
+        return $this->request( 'GET', '/sims/' . rawurlencode( $iccid ) . '/usage' );
     }
 
     public function get_sim_usage_bulk( array $iccids ): array {
         if ( empty( $iccids ) ) {
             return [];
         }
-        return $this->call( fn() => $this->sdk()->simUsageBulk( $iccids ) );
+        $result = [];
+        foreach ( $iccids as $iccid ) {
+            try {
+                $result[ $iccid ] = $this->get_sim_usage( $iccid );
+            } catch ( \Throwable $e ) {
+                $this->logger->warning( 'Bulk usage failed for ' . $iccid . ': ' . $e->getMessage() );
+                $result[ $iccid ] = [];
+            }
+        }
+        return $result;
     }
 
     public function get_sim_instructions( string $iccid, string $language = 'en' ): array {
-        return $this->call( fn() => $this->sdk()->getSimInstructions( $iccid, $language ) );
+        return $this->request( 'GET', '/sims/' . rawurlencode( $iccid ) . '/instructions', [ 'language' => $language ] );
+    }
+
+    public function get_sim_topup_packages( string $iccid ): array {
+        $resp = $this->request( 'GET', '/sims/' . rawurlencode( $iccid ) . '/topups' );
+        return $resp['data'] ?? $resp;
+    }
+
+    public function get_sim_package_history( string $iccid ): array {
+        $resp = $this->request( 'GET', '/sims/' . rawurlencode( $iccid ) . '/packages' );
+        return $resp['data'] ?? $resp;
     }
 
     /**
-     * Fetches a single SIM detail by ICCID via the REST endpoint.
-     * Result is cached for 1h to keep detail-page navigation snappy.
-     *
-     * @return array<string,mixed>|null
+     * Fetches a single SIM detail by ICCID. Cached 1h.
      */
     public function get_sim_by_iccid( string $iccid ): ?array {
         $iccid  = trim( $iccid );
@@ -267,25 +261,9 @@ final class Client {
         if ( is_array( $cached ) ) {
             return $cached;
         }
-
         try {
-            $token    = $this->get_token();
-            $response = wp_remote_get( MPA_API_BASE . '/sims/' . rawurlencode( $iccid ), [
-                'headers' => [
-                    'Accept'        => 'application/json',
-                    'Authorization' => 'Bearer ' . $token,
-                ],
-                'timeout' => $this->config->request_timeout(),
-            ] );
-            if ( is_wp_error( $response ) ) {
-                return null;
-            }
-            $code = wp_remote_retrieve_response_code( $response );
-            if ( $code >= 400 ) {
-                return null;
-            }
-            $body = json_decode( wp_remote_retrieve_body( $response ), true );
-            $data = is_array( $body ) ? ( $body['data'] ?? null ) : null;
+            $body = $this->request( 'GET', '/sims/' . rawurlencode( $iccid ) );
+            $data = $body['data'] ?? null;
             if ( is_array( $data ) ) {
                 set_transient( $key, $data, HOUR_IN_SECONDS );
                 return $data;
@@ -297,14 +275,7 @@ final class Client {
     }
 
     /**
-     * Direct ICCID lookup using the `filter[iccid]` query parameter.
-     *
-     * Why we need this on top of the single-sim endpoint: the
-     * `GET /v2/sims/{iccid}` endpoint can be slow / 404 for recycled
-     * eSIMs on some accounts, whereas `GET /v2/sims?filter[iccid]=…`
-     * always returns the row (with `recycled:true` when applicable).
-     *
-     * @return array<int,array<string,mixed>>  Empty array if no match.
+     * Searches SIMs by ICCID using filter[iccid] param.
      */
     public function search_sims_by_iccid( string $iccid ): array {
         $iccid = trim( $iccid );
@@ -317,44 +288,15 @@ final class Client {
     }
 
     /**
-     * Hits `GET /v2/sims` (the eSIM inventory endpoint) with the given
-     * filters and optional include set. Returns the flat list of sims +
-     * the pagination meta.
-     *
-     * `include=order,order.status,order.user,share` is what makes the
-     * "eSIM User" name/email and the order status show up in the response.
-     *
-     * @param array<string,mixed> $filters  e.g. ['filter[iccid]' => '8944…']
-     * @return array{data?: array<int,array<string,mixed>>, meta?: array<string,mixed>}
+     * Hits GET /v2/sims with given filters and include set.
      */
     public function get_sims_list( array $filters = [], string $include = '', int $page = 1, int $limit = 50 ): array {
-        $query = array_merge( [
-            'page'    => $page,
-            'limit'   => $limit,
-        ], $filters );
+        $query = array_merge( [ 'page' => $page, 'limit' => $limit ], $filters );
         if ( '' !== $include ) {
             $query['include'] = $include;
         }
-
         try {
-            $token    = $this->get_token();
-            $response = wp_remote_get( MPA_API_BASE . '/sims', [
-                'headers' => [
-                    'Accept'        => 'application/json',
-                    'Authorization' => 'Bearer ' . $token,
-                ],
-                'body'    => $query,
-                'timeout' => $this->config->request_timeout(),
-            ] );
-            if ( is_wp_error( $response ) ) {
-                throw new Exception( $response->get_error_message() );
-            }
-            $code = wp_remote_retrieve_response_code( $response );
-            $body = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
-            if ( $code >= 400 ) {
-                throw new Exception( $body['meta']['message'] ?? 'GET /v2/sims failed', $code, $body );
-            }
-            return $body;
+            return $this->request( 'GET', '/sims', $query );
         } catch ( Exception $e ) {
             $this->logger->warning( 'get_sims_list failed: ' . $e->getMessage() );
             return [];
@@ -362,12 +304,7 @@ final class Client {
     }
 
     /**
-     * Paginates `GET /v2/sims` until it has collected every sim matching the
-     * filters, or the hard cap is reached. Used for the eSIMs index + ICCID
-     * search. Cached 5 min under a per-filter key.
-     *
-     * @param array<string,mixed> $filters
-     * @return array<int,array<string,mixed>>
+     * Paginates GET /v2/sims until all sims matching filters are collected. Cached 5 min.
      */
     public function get_sims_paginated( array $filters = [], int $max_pages = 30, int $per_page = 100 ): array {
         $cache_key = 'mpa_sims_list_' . md5( wp_json_encode( $filters ) );
@@ -395,117 +332,88 @@ final class Client {
     }
 
     /**
-     * Assigns an "eSIM User" (Full Name + email) to a SIM via Airalo eSIM Cloud.
-     *
-     * Internally wraps `POST /v2/sims/{iccid}/share` (the eSIM Cloud
-     * assign flow). The customer receives the eSIM via link or QR, and
-     * Airalo records the user.name / user.email in the dashboard.
-     *
-     * If `$name` is empty we still call the endpoint (email-only is valid
-     * per the dashboard form), but Airalo will only show the email.
-     *
-     * @return array<string,mixed>
+     * Builds ICCID-to-order-data map. Cached 5 min.
      */
+    public function build_iccid_order_map(): array {
+        $cache_key = 'mpa_iccid_order_map';
+        $cached    = get_transient( $cache_key );
+        if ( is_array( $cached ) ) {
+            return $cached;
+        }
+
+        $orders = $this->get_orders_paginated();
+        $map    = [];
+
+        foreach ( $orders as $o ) {
+            $order_data = [
+                'package_id'  => (string) ( $o['package_id'] ?? '' ),
+                'package'     => (string) ( $o['package'] ?? '' ),
+                'description' => (string) ( $o['description'] ?? '' ),
+                'code'        => (string) ( $o['code'] ?? '' ),
+                'created_at'  => (string) ( $o['created_at'] ?? '' ),
+            ];
+            foreach ( (array) ( $o['sims'] ?? [] ) as $s ) {
+                $iccid = (string) ( $s['iccid'] ?? '' );
+                if ( '' !== $iccid ) {
+                    $map[ $iccid ] = $order_data;
+                }
+            }
+        }
+
+        set_transient( $cache_key, $map, 5 * MINUTE_IN_SECONDS );
+        return $map;
+    }
+
+    // -------------------------------------------------------------------------
+    // eSIM share / assign
+    // -------------------------------------------------------------------------
+
     public function assign_esim_user( string $iccid, string $name, string $email, string $sharing_option = 'link' ): array {
         $valid_options = [ 'link', 'qrcode' ];
         if ( ! in_array( $sharing_option, $valid_options, true ) ) {
             $sharing_option = 'link';
         }
-
-        $body = [
-            'to_email'       => $email,
-            'sharing_option' => [ $sharing_option ],
-        ];
+        $body = [ 'to_email' => $email, 'sharing_option' => [ $sharing_option ] ];
         if ( '' !== $name ) {
-            // eSIM Cloud / Airalo reads `name` as the full name shown as "eSIM User".
             $body['name'] = $name;
         }
-
-        $token    = $this->get_token();
-        $response = wp_remote_post( MPA_API_BASE . '/sims/' . rawurlencode( $iccid ) . '/share', [
-            'headers' => [
-                'Accept'        => 'application/json',
-                'Authorization' => 'Bearer ' . $token,
-                'Content-Type'  => 'application/json',
-            ],
-            'body'    => wp_json_encode( $body ),
-            'timeout' => $this->config->request_timeout(),
-        ] );
-        if ( is_wp_error( $response ) ) {
-            throw new Exception( $response->get_error_message() );
-        }
-        $code = wp_remote_retrieve_response_code( $response );
-        $data = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
-        if ( $code >= 400 ) {
-            throw new Exception( $data['meta']['message'] ?? 'Assign eSIM user failed', $code, $data );
-        }
-
-        // Bust the per-iccid cache so the detail page sees the new user on reload.
+        $result = $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body, true );
         delete_transient( self::CACHE_KEY_SIM_BY_ICCID . md5( $iccid ) );
-
-        return $data;
+        return $result;
     }
 
-    public function get_sim_topup_packages( string $iccid ): array {
-        return $this->call( fn() => $this->sdk()->getSimTopups( $iccid ) );
+    public function share_esim( string $iccid, string $email, string $sharing_option = 'link', ?string $copy_address = null ): array {
+        $body = [ 'to_email' => $email, 'sharing_option' => [ $sharing_option ] ];
+        if ( null !== $copy_address && '' !== $copy_address ) {
+            $body['copy_address'] = $copy_address;
+        }
+        return $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body, true );
     }
 
-    public function get_sim_package_history( string $iccid ): array {
-        return $this->call( fn() => $this->sdk()->getSimPackageHistory( $iccid ) );
+    // -------------------------------------------------------------------------
+    // Topups
+    // -------------------------------------------------------------------------
+
+    public function topup( string $package_id, string $iccid, ?string $description = null ): array {
+        $body = [ 'package_id' => $package_id, 'iccid' => $iccid ];
+        if ( null !== $description && '' !== $description ) {
+            $body['description'] = $description;
+        }
+        return $this->request( 'POST', '/topups', $body, true );
     }
+
+    // -------------------------------------------------------------------------
+    // Refunds
+    // -------------------------------------------------------------------------
 
     public function refund_order( array $iccids, string $reason, string $notes = '' ): array {
         return $this->refund_via_rest( $iccids, $reason, $notes );
     }
 
-    /**
-     * Shares an eSIM with a customer via Airalo eSIM Cloud.
-     *
-     * Wraps `POST /v2/sims/{iccid}/share` which sends the eSIM to the given
-     * email using the configured sharing option (link, qrcode, etc.).
-     *
-     * @return array<string,mixed>
-     */
-    public function share_esim( string $iccid, string $email, string $sharing_option = 'link', ?string $copy_address = null ): array {
-        $body = [
-            'to_email'        => $email,
-            'sharing_option'  => [ $sharing_option ],
-        ];
-        if ( null !== $copy_address && '' !== $copy_address ) {
-            $body['copy_address'] = $copy_address;
-        }
+    // -------------------------------------------------------------------------
+    // Package country map
+    // -------------------------------------------------------------------------
 
-        $token    = $this->get_token();
-        $response = wp_remote_post( MPA_API_BASE . '/sims/' . rawurlencode( $iccid ) . '/share', [
-            'headers' => [
-                'Accept'        => 'application/json',
-                'Authorization' => 'Bearer ' . $token,
-                'Content-Type'  => 'application/json',
-            ],
-            'body'    => wp_json_encode( $body ),
-            'timeout' => $this->config->request_timeout(),
-        ] );
-
-        if ( is_wp_error( $response ) ) {
-            throw new Exception( $response->get_error_message() );
-        }
-        $code = wp_remote_retrieve_response_code( $response );
-        $data = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
-        if ( $code >= 400 ) {
-            throw new Exception( $data['meta']['message'] ?? 'Share eSIM failed', $code, $data );
-        }
-        return $data;
-    }
-
-    /**
-     * Returns a `package_id => country_code` map built from the package catalog.
-     *
-     * Airalo's `/v2/orders` response does NOT include the country for each
-     * order; the only way to display "Spain - 5 GB - 30 Days" is to look up
-     * the country in the package catalog. The map is cached for 24h.
-     *
-     * @return array<string,string>  e.g. ['meraki-mobile-7days-1gb' => 'ES', ...]
-     */
     public function get_package_country_map( bool $force_refresh = false ): array {
         if ( ! $force_refresh ) {
             $cached = get_transient( self::CACHE_KEY_COUNTRY_MAP );
@@ -516,19 +424,8 @@ final class Client {
 
         $map = [];
         try {
-            $packages = $this->sdk()->getAllPackages( true );
-            if ( $packages && method_exists( $packages, 'toArray' ) ) {
-                $arr = $packages->toArray();
-            } elseif ( is_object( $packages ) ) {
-                $arr = json_decode( (string) $packages, true ) ?: [];
-            } else {
-                $arr = is_array( $packages ) ? $packages : [];
-            }
-
-            $rows = $arr['data'] ?? $arr;
-            if ( ! is_array( $rows ) ) {
-                $rows = [];
-            }
+            $result = $this->get_sim_packages( $force_refresh );
+            $rows   = $result['data'] ?? ( is_array( $result ) ? $result : [] );
 
             foreach ( (array) $rows as $pkg ) {
                 if ( ! is_array( $pkg ) ) {
@@ -540,8 +437,7 @@ final class Client {
                 }
                 $countries = $pkg['countries'] ?? null;
                 if ( is_array( $countries ) && ! empty( $countries ) ) {
-                    $code = strtoupper( (string) reset( $countries ) );
-                    $map[ $pid ] = $code;
+                    $map[ $pid ] = strtoupper( (string) reset( $countries ) );
                     continue;
                 }
                 if ( ! empty( $pkg['country'] ) ) {
@@ -556,10 +452,6 @@ final class Client {
         return $map;
     }
 
-    /**
-     * Convenience: country code (e.g. "ES") for a given Airalo package_id.
-     * Returns empty string if unknown.
-     */
     public function get_country_for_package( string $package_id ): string {
         if ( '' === $package_id ) {
             return '';
@@ -568,71 +460,67 @@ final class Client {
         return strtoupper( (string) ( $map[ $package_id ] ?? '' ) );
     }
 
-    public function topup( string $package_id, string $iccid, ?string $description = null ): array {
-        return $this->call( fn() => $this->sdk()->topup( $package_id, $iccid, $description ) );
-    }
-
-    public function get_sim_packages( bool $force_refresh = false ): array {
-        return $this->call( fn() => $this->sdk()->getSimPackages( $force_refresh ) );
-    }
-
-    public function place_order( string $package_id, int $quantity, ?string $description = null ): array {
-        return $this->call( fn() => $this->sdk()->order( $package_id, $quantity, $description ) );
-    }
-
-    private function sdk(): Airalo {
-        if ( null === $this->sdk ) {
-            $this->sdk = new Airalo( [
-                'client_id'     => $this->config->client_id(),
-                'client_secret' => $this->config->client_secret(),
-                'env'           => $this->config->env(),
-            ] );
-            $this->sdk_initialised = true;
-        }
-        return $this->sdk;
-    }
+    // -------------------------------------------------------------------------
+    // Core HTTP helpers
+    // -------------------------------------------------------------------------
 
     /**
-     * @template T
-     * @param callable():T $fn
-     * @return T
+     * Makes an authenticated request to the Airalo API.
+     *
+     * @param string              $method       GET or POST
+     * @param string              $path         e.g. '/orders'
+     * @param array<string,mixed> $params       Query params (GET) or body (POST)
+     * @param bool                $json_body    Encode POST body as JSON (default false = form)
+     * @return array<string,mixed>
+     * @throws Exception
      */
-    private function call( callable $fn ) {
+    private function request( string $method, string $path, array $params = [], bool $json_body = false ): array {
         if ( ! $this->is_configured() ) {
             throw new Exception( 'Credenciales Airalo no configuradas', 0 );
         }
-        try {
-            $result = $fn();
-            if ( is_object( $result ) && method_exists( $result, 'toArray' ) ) {
-                return $result->toArray();
-            }
-            if ( is_object( $result ) ) {
-                return json_decode( (string) $result, true ) ?? [];
-            }
-            return is_array( $result ) ? $result : [];
-        } catch ( AiraloException $e ) {
-            $this->logger->error( 'Airalo SDK error: ' . $e->getMessage(), [ 'trace' => $e->getTraceAsString() ] );
-            throw new Exception( $e->getMessage(), 0, [], $e );
-        } catch ( \Throwable $e ) {
-            $this->logger->error( 'Airalo client error: ' . $e->getMessage() );
-            throw new Exception( $e->getMessage(), 0, [], $e );
-        }
-    }
 
-    private function fetch_devices_via_rest(): array {
         $token = $this->get_token();
-        $response = wp_remote_get( MPA_API_BASE . '/compatible-devices', [
+        $url   = MPA_API_BASE . $path;
+        $args  = [
             'headers' => [
                 'Accept'        => 'application/json',
                 'Authorization' => 'Bearer ' . $token,
             ],
             'timeout' => $this->config->request_timeout(),
-        ] );
-        return $this->parse_list( $response, 'data' );
+        ];
+
+        if ( 'GET' === strtoupper( $method ) ) {
+            if ( ! empty( $params ) ) {
+                $args['body'] = $params;
+            }
+            $response = wp_remote_get( $url, $args );
+        } else {
+            if ( $json_body ) {
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body']                    = wp_json_encode( $params );
+            } else {
+                $args['headers']['Content-Type'] = 'application/json';
+                $args['body']                    = wp_json_encode( $params );
+            }
+            $response = wp_remote_post( $url, $args );
+        }
+
+        if ( is_wp_error( $response ) ) {
+            throw new Exception( $response->get_error_message() );
+        }
+
+        $code = wp_remote_retrieve_response_code( $response );
+        $body = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
+
+        if ( $code >= 400 ) {
+            throw new Exception( $body['meta']['message'] ?? "API error on {$method} {$path}", $code, $body );
+        }
+
+        return $body;
     }
 
     private function fetch_orders_via_rest( array $params ): array {
-        $token = $this->get_token();
+        $token    = $this->get_token();
         $response = wp_remote_get( MPA_API_BASE . '/orders', [
             'headers' => [
                 'Accept'        => 'application/json',
@@ -646,10 +534,7 @@ final class Client {
 
     private function refund_via_rest( array $iccids, string $reason, string $notes = '' ): array {
         $token = $this->get_token();
-        $body = [
-            'iccids' => $iccids,
-            'reason' => $reason,
-        ];
+        $body  = [ 'iccids' => $iccids, 'reason' => $reason ];
         if ( '' !== $notes ) {
             $body['notes'] = $notes;
         }
@@ -666,15 +551,15 @@ final class Client {
             throw new Exception( $response->get_error_message() );
         }
         $code = wp_remote_retrieve_response_code( $response );
-        $body  = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
+        $data = json_decode( wp_remote_retrieve_body( $response ), true ) ?: [];
         if ( $code >= 400 ) {
-            throw new Exception( $body['meta']['message'] ?? 'Refund failed', $code, $body );
+            throw new Exception( $data['meta']['message'] ?? 'Refund failed', $code, $data );
         }
-        return $body;
+        return $data;
     }
 
     private function fetch_balance_via_rest(): array {
-        $token = $this->get_token();
+        $token    = $this->get_token();
         $response = wp_remote_get( MPA_API_BASE . '/balance', [
             'headers' => [
                 'Accept'        => 'application/json',
