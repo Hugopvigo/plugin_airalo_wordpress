@@ -35,4 +35,9 @@ temp/
 
 # Project
 mi-plugin-airalo-*.zip
+*.zip
 package.sh
+
+# Docs (except README.md)
+*.md
+!README.md
