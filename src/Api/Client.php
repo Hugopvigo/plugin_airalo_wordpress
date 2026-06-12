@@ -75,7 +75,13 @@ final class Client {
 
     /**
      * Returns all available packages, paginating through the API.
-     * Result format: ['data' => [...packages...]]
+     *
+     * The raw `GET /v2/packages` response is nested (country → operators →
+     * packages); rows are flattened to the same shape the old SDK produced
+     * with `getSimPackages(true)`: `package_id`, `countries` (ISO codes),
+     * `title`, `price`, `net_price`, `amount`, etc.
+     *
+     * Result format: ['data' => [...flat packages...]]
      */
     public function get_sim_packages( bool $force_refresh = false ): array {
         if ( ! $force_refresh ) {
@@ -84,7 +90,7 @@ final class Client {
                 return $cached;
             }
         }
-        $all   = [];
+        $flat  = [];
         $page  = 1;
         $limit = 100;
         do {
@@ -93,14 +99,79 @@ final class Client {
             if ( ! is_array( $rows ) || empty( $rows ) ) {
                 break;
             }
-            $all      = array_merge( $all, $rows );
-            $last     = (int) ( $resp['meta']['last_page'] ?? $page );
+            foreach ( $rows as $country ) {
+                if ( is_array( $country ) ) {
+                    $this->flatten_country_packages( $country, $flat );
+                }
+            }
+            $last = (int) ( $resp['meta']['last_page'] ?? $page );
             $page++;
         } while ( $page <= $last );
 
-        $result = [ 'data' => $all ];
+        $result = [ 'data' => $flat ];
         set_transient( self::CACHE_KEY_PACKAGES, $result, DAY_IN_SECONDS );
         return $result;
+    }
+
+    /**
+     * Flattens one country/region row of `GET /v2/packages` into flat
+     * package rows appended to $flat.
+     *
+     * @param array<string,mixed>            $country
+     * @param array<int,array<string,mixed>> $flat    Accumulator (by ref).
+     */
+    private function flatten_country_packages( array $country, array &$flat ): void {
+        foreach ( (array) ( $country['operators'] ?? [] ) as $operator ) {
+            if ( ! is_array( $operator ) ) {
+                continue;
+            }
+
+            $codes = [];
+            foreach ( (array) ( $operator['countries'] ?? [] ) as $c ) {
+                $code = strtoupper( (string) ( is_array( $c ) ? ( $c['country_code'] ?? '' ) : $c ) );
+                if ( '' !== $code ) {
+                    $codes[] = $code;
+                }
+            }
+            if ( empty( $codes ) && ! empty( $country['country_code'] ) ) {
+                $codes = [ strtoupper( (string) $country['country_code'] ) ];
+            }
+
+            foreach ( (array) ( $operator['packages'] ?? [] ) as $pkg ) {
+                if ( ! is_array( $pkg ) ) {
+                    continue;
+                }
+                $pid = (string) ( $pkg['id'] ?? '' );
+                if ( '' === $pid ) {
+                    continue;
+                }
+                $flat[] = [
+                    'package_id'        => $pid,
+                    'slug'              => (string) ( $country['slug'] ?? '' ),
+                    'type'              => (string) ( $pkg['type'] ?? '' ),
+                    'price'             => $pkg['price'] ?? null,
+                    'net_price'         => $pkg['net_price'] ?? null,
+                    'amount'            => $pkg['amount'] ?? null,
+                    'day'               => $pkg['day'] ?? null,
+                    'is_unlimited'      => (bool) ( $pkg['is_unlimited'] ?? false ),
+                    'title'             => (string) ( $pkg['title'] ?? $pid ),
+                    'data'              => $pkg['data'] ?? '',
+                    'short_info'        => $pkg['short_info'] ?? '',
+                    'voice'             => $pkg['voice'] ?? null,
+                    'text'              => $pkg['text'] ?? null,
+                    'plan_type'         => (string) ( $operator['plan_type'] ?? '' ),
+                    'activation_policy' => (string) ( $operator['activation_policy'] ?? '' ),
+                    'operator'          => [
+                        'title'      => (string) ( $operator['title'] ?? '' ),
+                        'is_roaming' => (bool) ( $operator['is_roaming'] ?? false ),
+                        'info'       => $operator['info'] ?? [],
+                    ],
+                    'countries'         => $codes,
+                    'image'             => (string) ( $operator['image']['url'] ?? '' ),
+                    'other_info'        => $operator['other_info'] ?? '',
+                ];
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -377,7 +448,7 @@ final class Client {
         if ( '' !== $name ) {
             $body['name'] = $name;
         }
-        $result = $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body, true );
+        $result = $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body );
         delete_transient( self::CACHE_KEY_SIM_BY_ICCID . md5( $iccid ) );
         return $result;
     }
@@ -387,7 +458,7 @@ final class Client {
         if ( null !== $copy_address && '' !== $copy_address ) {
             $body['copy_address'] = $copy_address;
         }
-        return $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body, true );
+        return $this->request( 'POST', '/sims/' . rawurlencode( $iccid ) . '/share', $body );
     }
 
     // -------------------------------------------------------------------------
@@ -399,7 +470,7 @@ final class Client {
         if ( null !== $description && '' !== $description ) {
             $body['description'] = $description;
         }
-        return $this->request( 'POST', '/topups', $body, true );
+        return $this->request( 'POST', '/topups', $body );
     }
 
     // -------------------------------------------------------------------------
@@ -467,14 +538,13 @@ final class Client {
     /**
      * Makes an authenticated request to the Airalo API.
      *
-     * @param string              $method       GET or POST
-     * @param string              $path         e.g. '/orders'
-     * @param array<string,mixed> $params       Query params (GET) or body (POST)
-     * @param bool                $json_body    Encode POST body as JSON (default false = form)
+     * @param string              $method  GET or POST
+     * @param string              $path    e.g. '/orders'
+     * @param array<string,mixed> $params  Query params (GET) or JSON body (POST)
      * @return array<string,mixed>
      * @throws Exception
      */
-    private function request( string $method, string $path, array $params = [], bool $json_body = false ): array {
+    private function request( string $method, string $path, array $params = [] ): array {
         if ( ! $this->is_configured() ) {
             throw new Exception( 'Credenciales Airalo no configuradas', 0 );
         }
@@ -495,13 +565,8 @@ final class Client {
             }
             $response = wp_remote_get( $url, $args );
         } else {
-            if ( $json_body ) {
-                $args['headers']['Content-Type'] = 'application/json';
-                $args['body']                    = wp_json_encode( $params );
-            } else {
-                $args['headers']['Content-Type'] = 'application/json';
-                $args['body']                    = wp_json_encode( $params );
-            }
+            $args['headers']['Content-Type'] = 'application/json';
+            $args['body']                    = wp_json_encode( $params );
             $response = wp_remote_post( $url, $args );
         }
 
