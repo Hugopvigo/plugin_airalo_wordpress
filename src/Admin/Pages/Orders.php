@@ -11,6 +11,7 @@ use Hugo\MiPluginAiralo\Api\Client;
 use Hugo\MiPluginAiralo\Api\Exception;
 use Hugo\MiPluginAiralo\Integrations\WooCommerce\OrderLinker;
 use Hugo\MiPluginAiralo\Plugin;
+use Hugo\MiPluginAiralo\Support\Countries;
 use Hugo\MiPluginAiralo\Support\Logger;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -110,7 +111,7 @@ final class Orders {
                     <td>
                         <strong><?php echo esc_html( $package ); ?></strong>
                         <?php if ( '' !== $country ) : ?>
-                            <span class="mpa-pill mpa-pill--country" title="<?php echo esc_attr( $country ); ?>"><?php echo esc_html( $country ); ?></span>
+                            <span class="mpa-pill mpa-pill--country" title="<?php echo esc_attr( $country ); ?>"><?php echo esc_html( Countries::name( $country ) ); ?></span>
                         <?php endif; ?>
                         <br><code class="mpa-mono"><?php echo esc_html( $package_id ); ?></code>
                     </td>

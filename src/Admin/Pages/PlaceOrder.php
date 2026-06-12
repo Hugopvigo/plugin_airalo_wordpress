@@ -14,6 +14,7 @@ use Hugo\MiPluginAiralo\Api\Client;
 use Hugo\MiPluginAiralo\Api\Exception;
 use Hugo\MiPluginAiralo\Env\Config;
 use Hugo\MiPluginAiralo\Plugin;
+use Hugo\MiPluginAiralo\Support\Countries;
 use Hugo\MiPluginAiralo\Support\Logger;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -73,7 +74,7 @@ final class PlaceOrder {
                                     $grouped[ $code ][] = $p;
                                 }
                                 foreach ( $grouped as $code => $pkgs ) :
-                                    $label = '' !== $code ? $code : __( 'Global', MPA_TEXTDOMAIN );
+                                    $label = '' !== $code ? Countries::name( $code ) : __( 'Global', MPA_TEXTDOMAIN );
                                     ?>
                                     <optgroup label="<?php echo esc_attr( $label ); ?>">
                                     <?php foreach ( $pkgs as $p ) :

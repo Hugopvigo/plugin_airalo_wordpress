@@ -10,6 +10,7 @@ namespace Hugo\MiPluginAiralo\Admin\Pages;
 use Hugo\MiPluginAiralo\Api\Client;
 use Hugo\MiPluginAiralo\Api\Exception;
 use Hugo\MiPluginAiralo\Plugin;
+use Hugo\MiPluginAiralo\Support\Countries;
 use Hugo\MiPluginAiralo\Support\Logger;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -227,7 +228,7 @@ final class Esims {
                 <tr <?php echo $recycled ? 'style="background:#fff8e1;"' : ''; ?>>
                     <td><a href="<?php echo esc_url( $detail_url ); ?>"><code><?php echo esc_html( $iccid ); ?></code></a></td>
                     <td><?php echo '' !== $user_label ? esc_html( $user_label ) : '<span style="color:#8c8f94;">—</span>'; ?></td>
-                    <td><?php echo '' !== $country ? '<span class="mpa-pill mpa-pill--country">' . esc_html( $country ) . '</span>' : '<span style="color:#8c8f94;">—</span>'; ?></td>
+                    <td><?php echo '' !== $country ? '<span class="mpa-pill mpa-pill--country" title="' . esc_attr( $country ) . '">' . esc_html( Countries::name( $country ) ) . '</span>' : '<span style="color:#8c8f94;">—</span>'; ?></td>
                     <td>
                         <?php echo esc_html( (string) ( $sim['_package'] ?? $sim['_package_id'] ?? '' ) ); ?>
                         <?php if ( ! empty( $sim['_package'] ) && ! empty( $sim['_package_id'] ) && $sim['_package'] !== $sim['_package_id'] ) : ?>

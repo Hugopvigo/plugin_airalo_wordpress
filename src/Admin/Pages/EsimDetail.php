@@ -16,6 +16,7 @@ use Hugo\MiPluginAiralo\Api\Client;
 use Hugo\MiPluginAiralo\Api\Exception;
 use Hugo\MiPluginAiralo\Integrations\WooCommerce\OrderLinker;
 use Hugo\MiPluginAiralo\Plugin;
+use Hugo\MiPluginAiralo\Support\Countries;
 use Hugo\MiPluginAiralo\Support\Logger;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -230,7 +231,7 @@ final class EsimDetail {
                     <h1>
                         <?php echo esc_html( $pkg_title ); ?>
                         <?php if ( '' !== $country ) : ?>
-                            <span class="mpa-pill mpa-pill--country" title="<?php echo esc_attr( $country ); ?>"><?php echo esc_html( $country ); ?></span>
+                            <span class="mpa-pill mpa-pill--country" title="<?php echo esc_attr( $country ); ?>"><?php echo esc_html( Countries::name( $country ) ); ?></span>
                         <?php endif; ?>
                     </h1>
                     <code class="mpa-detail__iccid"><?php echo esc_html( $iccid ); ?></code>
