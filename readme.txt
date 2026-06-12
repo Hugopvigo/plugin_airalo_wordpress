@@ -4,7 +4,7 @@ Tags: airalo, esim, woocommerce, backoffice, refills
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 2.4.0
+Stable tag: 2.4.1
 License: Proprietary
 License URI: https://www.suop.es/
 
@@ -51,6 +51,10 @@ Plugin interno para gestionar la integración con Airalo Partner API desde WordP
 * OrderLinker: `sync_order` ahora siempre deja rastro del WP user que disparó la sincronización
 * API Client: `get_sims_list()`, `get_sims_paginated()`, `search_sims_by_iccid()`, `assign_esim_user()` (nuevo)
 * AJAX: nueva acción `mpa_assign_esim_user`
+
+= 2.4.1 =
+* Fix: búsqueda de paquetes en Place Order ahora encuentra "1gb", "5gb" (strip de espacios en texto de opciones) y filtra por código de país del grupo
+* Fix: `wp_next_scheduled` en `schedule_orders_revalidation` pasaba args incorrectos, causando acumulación de eventos en WP-Cron
 
 = 2.4.0 =
 * Caché stale-while-revalidate para `get_orders()`: dos capas (fresca 5 min + stale 24 h) que evitan llamadas API en vivo en cada carga de wp-admin

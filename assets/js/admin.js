@@ -189,11 +189,12 @@
         var optgroups = sel.querySelectorAll('optgroup');
         optgroups.forEach(function (group) {
             var hasVisible = false;
+            var groupLabel = (group.getAttribute('label') || '').toLowerCase().replace(/\s+/g, '');
             group.querySelectorAll('option').forEach(function (opt) {
                 if (!opt.value) return;
-                var text = (opt.textContent || '').toLowerCase();
+                var text = (opt.textContent || '').toLowerCase().replace(/\s+/g, '');
                 var pid  = (opt.value || '').toLowerCase();
-                var show = !q || text.indexOf(q) !== -1 || pid.indexOf(q) !== -1;
+                var show = !q || text.indexOf(q) !== -1 || pid.indexOf(q) !== -1 || groupLabel.indexOf(q) !== -1;
                 opt.hidden = !show;
                 opt.style.display = show ? '' : 'none';
                 if (show) hasVisible = true;
