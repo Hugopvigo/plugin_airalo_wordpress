@@ -29,6 +29,8 @@ final class Client {
     private const CACHE_KEY_DEVICES      = 'mpa_airalo_devices';
     private const CACHE_KEY_COUNTRY_MAP  = 'mpa_airalo_country_map';
     private const CACHE_KEY_SIM_BY_ICCID = 'mpa_airalo_sim_';
+    private const CACHE_KEY_ORDERS_FRESH = 'mpa_orders_';
+    private const CACHE_KEY_ORDERS_STALE = 'mpa_orders_stale_';
 
     private ?Airalo $sdk = null;
     private bool $sdk_initialised = false;
@@ -65,8 +67,80 @@ final class Client {
         return $data;
     }
 
-    public function get_orders( array $params = [] ): array {
-        return $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+    public function get_orders( array $params = [], bool $bypass_cache = false ): array {
+        if ( $bypass_cache ) {
+            return $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+        }
+        return $this->get_orders_cached( $params );
+    }
+
+    /**
+     * Stale-while-revalidate cache for get_orders().
+     *
+     * Two-layer strategy:
+     *  1. Fresh cache (5 min) — returned immediately when available.
+     *  2. Stale cache (24 h) — returned when fresh expires, while a
+     *     background revalidation is scheduled via wp_schedule_single_event.
+     *  3. Cold start — fetches from the API and populates both layers.
+     *
+     * @param array<string,mixed> $params  Query params for GET /v2/orders.
+     * @return array<int, array<string,mixed>>
+     */
+    private function get_orders_cached( array $params ): array {
+        $params_key = md5( wp_json_encode( $params ) );
+        $fresh_key  = self::CACHE_KEY_ORDERS_FRESH . $params_key;
+        $stale_key  = self::CACHE_KEY_ORDERS_STALE . $params_key;
+
+        $fresh = get_transient( $fresh_key );
+        if ( is_array( $fresh ) ) {
+            return $fresh;
+        }
+
+        $stale = get_transient( $stale_key );
+        if ( is_array( $stale ) ) {
+            $this->schedule_orders_revalidation( $params );
+            return $stale;
+        }
+
+        $data = $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+        set_transient( $fresh_key, $data, $this->config->cache_ttl_orders() );
+        set_transient( $stale_key, $data, $this->config->cache_ttl_orders_stale() );
+        return $data;
+    }
+
+    /**
+     * Schedules a one-shot background revalidation for the orders cache.
+     *
+     * Uses wp_schedule_single_event with a 30-second delay so the current
+     * request returns immediately with stale data while the next request
+     * (or WP-Cron run) refreshes the cache layers.
+     */
+    private function schedule_orders_revalidation( array $params ): void {
+        $hook = 'mpa_revalidate_orders';
+        if ( wp_next_scheduled( $hook, [ $params ] ) ) {
+            return;
+        }
+        wp_schedule_single_event( time() + 30, $hook, [ $params ] );
+    }
+
+    /**
+     * Refreshes both fresh and stale cache layers for get_orders().
+     *
+     * Called by the mpa_revalidate_orders cron hook. Silently catches
+     * errors so the background job never crashes.
+     */
+    public function revalidate_orders_cache( array $params ): void {
+        $params_key = md5( wp_json_encode( $params ) );
+        $fresh_key  = self::CACHE_KEY_ORDERS_FRESH . $params_key;
+        $stale_key  = self::CACHE_KEY_ORDERS_STALE . $params_key;
+
+        try {
+            $data = $this->call( fn() => $this->fetch_orders_via_rest( $params ) );
+            set_transient( $fresh_key, $data, $this->config->cache_ttl_orders() );
+            set_transient( $stale_key, $data, $this->config->cache_ttl_orders_stale() );
+        } catch ( \Throwable $e ) {
+            $this->logger->warning( 'Orders revalidation failed: ' . $e->getMessage() );
+        }
     }
 
     /**
@@ -79,6 +153,12 @@ final class Client {
      * @return array<int, array<string,mixed>>
      */
     public function get_orders_paginated( int $max_pages = 40, int $per_page = 50 ): array {
+        $cache_key = 'mpa_orders_paginated_' . md5( "{$max_pages}_{$per_page}" );
+        $cached    = get_transient( $cache_key );
+        if ( is_array( $cached ) ) {
+            return $cached;
+        }
+
         $collected = [];
         $seen_codes = [];
 
@@ -110,6 +190,7 @@ final class Client {
             }
         }
 
+        set_transient( $cache_key, $collected, $this->config->cache_ttl_orders() );
         return $collected;
     }
 

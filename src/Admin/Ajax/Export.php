@@ -43,7 +43,7 @@ final class Export {
 
         try {
             do {
-                $batch = $this->api->get_orders( [ 'page' => $page, 'limit' => $limit ] );
+                $batch = $this->api->get_orders( [ 'page' => $page, 'limit' => $limit ], true );
                 if ( empty( $batch ) ) {
                     break;
                 }
@@ -81,7 +81,7 @@ final class Export {
 
         $rows = [];
         try {
-            $orders = $this->api->get_orders( [ 'limit' => 100 ] );
+            $orders = $this->api->get_orders( [ 'limit' => 100 ], true );
             foreach ( (array) $orders as $o ) {
                 $sims = $o['sims'] ?? [];
                 if ( ! is_array( $sims ) || empty( $sims ) ) {

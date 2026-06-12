@@ -93,6 +93,10 @@ final class Plugin {
         }
 
         $this->front->register();
+
+        add_action( 'mpa_revalidate_orders', function ( array $params ) {
+            $this->api->revalidate_orders_cache( $params );
+        } );
     }
 
     public function is_woocommerce_active(): bool {

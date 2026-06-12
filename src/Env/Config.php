@@ -48,6 +48,14 @@ final class Config {
         return (int) apply_filters( 'mpa_cache_ttl_token', HOUR_IN_SECONDS );
     }
 
+    public function cache_ttl_orders(): int {
+        return (int) apply_filters( 'mpa_cache_ttl_orders', 5 * MINUTE_IN_SECONDS );
+    }
+
+    public function cache_ttl_orders_stale(): int {
+        return (int) apply_filters( 'mpa_cache_ttl_orders_stale', DAY_IN_SECONDS );
+    }
+
     public function request_timeout(): int {
         return (int) apply_filters( 'mpa_request_timeout', 15 );
     }

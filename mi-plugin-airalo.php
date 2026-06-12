@@ -3,7 +3,7 @@
  * Plugin Name: Mi Plugin Airalo
  * Plugin URI:  https://www.suop.es/
  * Description: Panel de backoffice para vincular pedidos WooCommerce con Airalo, gestionar refunds, eSIMs/QR, top-ups y consumo de datos.
- * Version:     2.3.0
+ * Version:     2.4.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author:      SUOP Mobile SL — Hugo Pérez-Vigo (@hugopvigo)
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'MPA_VERSION', '2.2.0' );
+define( 'MPA_VERSION', '2.4.0' );
 define( 'MPA_FILE', __FILE__ );
 define( 'MPA_PATH', plugin_dir_path( __FILE__ ) );
 define( 'MPA_URL', plugin_dir_url( __FILE__ ) );
