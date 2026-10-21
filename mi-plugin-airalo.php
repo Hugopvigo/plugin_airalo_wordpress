@@ -10,7 +10,7 @@
  * Author URI:  https://www.suop.es/
  * Text Domain: mi-plugin-airalo
  * Domain Path: /languages
- * License:     Proprietary
+ * License:     CC BY-NC-SA 4.0
  *
  * @package Hugo\MiPluginAiralo
  */

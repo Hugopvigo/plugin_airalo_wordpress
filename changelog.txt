@@ -5,8 +5,8 @@ Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
 Stable tag: 2.4.3
-License: Proprietary
-License URI: https://www.suop.es/
+License: CC BY-NC-SA 4.0
+License URI: https://creativecommons.org/licenses/by-nc-sa/4.0/
 
 Panel de backoffice para Airalo Partner API: vincula pedidos de WooCommerce, gestiona refunds, eSIMs/QR, top-ups y consumo de datos.
 
