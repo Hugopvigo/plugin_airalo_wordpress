@@ -1,3 +1,7 @@
+<meta property="og:title" content="PLUGIN AIRALO WORDPRESS">
+<meta property="og:description" content="Un backoffice de WordPress para la cuenta de partner de Airalo.">
+<meta property="og:image" content="https://raw.githubusercontent.com/Hugopvigo/plugin_airalo_wordpress/main/docs/capturas/og.png">
+
 <p align="center">
   <img src="docs/capturas/00-cabecera.png" alt="Airalo para WordPress — backoffice de la cuenta de partner de Airalo en WooCommerce" width="100%">
 </p>
