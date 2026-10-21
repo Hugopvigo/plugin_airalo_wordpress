@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/capturas/00-cabecera.png" alt="Mi Plugin Airalo — panel de backoffice de la API de Airalo para WordPress" width="100%">
+  <img src="docs/capturas/00-cabecera.png" alt="Airalo para WordPress — backoffice de la cuenta de partner de Airalo en WooCommerce" width="100%">
 </p>
 
 <p align="center">
